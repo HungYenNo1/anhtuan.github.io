@@ -1,0 +1,2192 @@
+1. Tạo thư mục dự án và khởi tạo dự án Node.js
+```
+mkdir my-project
+cd my-project
+npm init -y
+```
+2. Cài đặt các gói cần thiết
+```
+npm install express body-parser oracledb ejs dotenv express-session crypto bcrypt
+npm install nodemon --save-dev
+```
+3. Tạo file `.env`
+```
+#DB_USER=hsofttamanh
+#DB_PASSWORD=hsofttamanh
+#DB_CONNECT_STRING=192.168.8.5/hndev
+
+DB_USER=hsofttamanh
+DB_PASSWORD=hsofttamanh
+DB_CONNECT_STRING=hsoft-primary.bvta.vn/hsoft.quang
+```
+4. Tạo file `app.js`
+```
+const express = require('express');
+const oracledb = require('oracledb');
+const dotenv = require('dotenv');
+const bodyParser = require('body-parser');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
+
+dotenv.config();
+
+const app = express();
+const port = 3000;
+const host = 'localhost';
+
+app.set('view engine', 'ejs');
+app.use(express.static('public'));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Cấu hình session
+app.use(session({
+    secret: 'your_secret_key',  // Thay 'your_secret_key' bằng khóa bí mật của bạn
+    resave: false,
+    saveUninitialized: true,
+    cookie: { 
+        maxAge: 24 * 60 * 60 * 1000, // 24 giờ (thời gian sống của session)
+        secure: false // Đặt thành true nếu bạn sử dụng HTTPS
+    }
+}));
+
+async function getOracleConnection() {
+    try {
+        return await oracledb.getConnection({
+            user: process.env.DB_USER,
+            password: process.env.DB_PASSWORD,
+            connectString: process.env.DB_CONNECT_STRING
+        });
+    } catch (err) {
+        console.error('Failed to get Oracle connection:', err);
+    }
+}
+
+//Đăng nhập
+app.get('/login', (req, res) => {
+    res.render('login');
+});
+
+app.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT ID, USERID, HOTEN FROM HSOFTTAMANH.DLOGIN WHERE USERID = :username`,
+            { username }
+        );
+
+        if (result.rows.length === 0 ) {
+            res.render('login', { error: 'Tên đăng nhập và mật khẩu không hợp lệ!' });
+        } else {
+            // Lưu thông tin vào session
+            req.session.loggedin = true;
+            req.session.username = username;
+            req.session.fullname = result.rows[0][2]; // Giả sử HOTEN ở vị trí thứ 3 trong kết quả
+            req.session.ip = req.ip;
+
+            res.redirect('/'); // Chuyển hướng đến trang chủ sau khi đăng nhập thành công
+        }
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error connecting to database');
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return console.log(err);
+        }
+        res.redirect('/login'); // Chuyển hướng về trang đăng nhập sau khi đăng xuất
+    });
+});
+
+app.get('/', (req, res) => {
+    if (req.session.loggedin) {
+        res.render('index', { fullname: req.session.fullname, ip: req.session.ip });
+    } else {
+        res.redirect('/login');
+    }
+});
+
+app.get('/menu-item-1', async (req, res) => {
+    if (!req.session.loggedin) {
+        return res.redirect('/login'); // Chuyển hướng đến trang đăng nhập nếu chưa đăng nhập
+    }
+    
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT ID, MA, TEN, MAKP FROM HSOFTTAMANH.D_DUOCKP WHERE ID NOT IN ('16', '46','123','124','127', '128', '151') ORDER BY TEN`
+        );
+        const makpResult = await connection.execute(
+            `SELECT MAKP, TENKP FROM HSOFTTAMANH.BTDKP_BV ORDER BY TENKP`
+        );
+        res.render('menu-item-1', { 
+            data: result.rows, 
+            makpData: makpResult.rows, 
+            fullname: req.session.fullname, 
+            ip: req.session.ip 
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error connecting to database');
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.post('/update-status', async (req, res) => {
+    const { id, action, makp } = req.body;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+
+        // Lấy mã khoa cũ trước khi cập nhật
+        const oldMakpResult = await connection.execute(
+            `SELECT MAKP FROM HSOFTTAMANH.D_DUOCKP WHERE ID = :id`,
+            { id }
+        );
+        const oldMakp = oldMakpResult.rows[0][0];
+
+        const makpMap = {
+            '1': '001',
+            '2': '007',
+            '3': '008',
+            '5': '014',
+            '6': '002',
+            '7': '109',
+            '8': '999',
+            '9': '111',
+            '10': '105',
+            '11': '006',
+            '12': '112',
+            '16': '152',
+            '17': '999',
+            '22': '002',
+            '23': '017',
+            '26': '010',
+            '27': '013',
+            '28': '063',
+            '29': '018',
+            '30': '019',
+            '31': '021',
+            '32': '020',
+            '33': '003',
+            '35': '016',
+            '40': '034',
+            '41': '034',
+            '43': '024',
+            '45': '027',
+            '47': '031',
+            '48': '032',
+            '49': '033',
+            '51': '057',
+            '55': '022',
+            '56': '023',
+            '57': '041',
+            '59': '055',
+            '60': '009',
+            '61': '038',
+            '62': '015',
+            '63': '052',
+            '65': '054',
+            '66': '130',
+            '67': '040',
+            '69': '061',
+            '70': '058',
+            '71': '059',
+            '72': '060',
+            '73': '062',
+            '74': '026',
+            '75': '064',
+            '78': '028',
+            '84': '075',
+            '87': '067',
+            '88': '076',
+            '89': '093',
+            '90': '078',
+            '91': '045',
+            '92': '080',
+            '93': '088',
+            '94': '089',
+            '95': '090',
+            '96': '091',
+            '97': '092',
+            '98': '104',
+            '99': '057',
+            '100': '105',
+            '104': '156',
+            '105': '149',
+            '106': '114',
+            '107': '111',
+            '108': '077',
+            '112': '118',
+            '113': '006',
+            '114': '112',
+            '115': '045',
+            '116': '074',
+            '117': '037',
+            '118': '128',
+            '119': '108',
+            '120': '093',
+            '121': '094',
+            '122': '136',
+            '130': '184',
+            '131': '148',
+            '132': '117',
+            '133': '150',
+            '134': '151',
+            '135': '152',
+            '136': '154',
+            '137': '153',
+            '141': '156',
+            '142': '157',
+            '143': '079',
+            '144': '169',
+            '145': '170',
+            '146': '112',
+            '148': '172',
+            '149': '173',
+            '150': '104',
+            '152': '155',
+            '154': '176',
+            '155': '177',
+            '156': '006',
+            '157': '112',
+            '158': '204',
+            '159': '006',
+            '160': '138',
+            '162': '212',
+            '163': '203',
+            '164': '006',
+            '165': '017',
+            '166': '234',
+            '167': '233',
+            '168': '211',
+            '169': '006',
+            '171': '270',
+            '172': '271',
+            '173': '267',
+            '174': '273',
+            '175': '267',
+            '176': '267',
+            '177': '267',
+            '178': '279',
+        };
+
+        // Thực hiện cập nhật mã khoa phòng
+        let newMakp;
+        if (action === 'dong') {
+            newMakp = makpMap[id] || '000'; 
+        } else if (action === 'mo') {
+            newMakp = ['11', '113', '17', '8', '91', '84', '88', '43', '106', '142', '109', '108', '148', '90', '105', '9', '107', '23', '104', '59', '135', '10', '112', '63', '89'].includes(id) ? '056' : null;
+        } else if (action === 'update') {
+            newMakp = makp;
+        } else if (action === 'setNull') {
+            newMakp = null;
+        } else if (action === 'setDefault') {
+            newMakp = makpMap[id] || '000';
+        }
+
+        await connection.execute(
+            `UPDATE HSOFTTAMANH.D_DUOCKP SET MAKP = :makp WHERE ID = :id`,
+            { makp: newMakp, id },
+            { autoCommit: true }
+        );
+
+        // Ghi log
+        const slog_module = 'DM_VTYT';
+        const slog_event = action === 'dong' ? 'Close' : action === 'mo' ? 'Open' : 'Update';
+        const slog_log_old = oldMakp || 'NULL';
+        const slog_log_new = newMakp || 'NULL';
+        const slog_note = `Cập nhật: ${slog_log_old} -> ${slog_log_new}`;
+        const slog_userid = req.session.username;
+        const slog_computer = req.hostname;
+        const slog_hostip = req.session.ip;
+
+        await writeLog(slog_userid, slog_computer, slog_hostip, slog_module, slog_event, slog_log_old, slog_log_new, slog_note);
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/menu-item-2', async (req, res) => {
+    if (!req.session.loggedin) {
+        return res.redirect('/login'); // Chuyển hướng đến trang đăng nhập nếu chưa đăng nhập
+    }
+
+    res.render('menu-item-2', { 
+        fullname: req.session.fullname, 
+        ip: req.session.ip 
+    });
+});
+
+app.post('/search-pid', async (req, res) => {
+    const { pid } = req.body;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT 
+                a.MABN AS ma_bn,
+                a.HOTEN AS ho_ten,
+                a.NAMSINH AS nam_sinh,
+                a.SONHA AS so_nha,
+                a.MATT AS ma_tinh,
+                b.TENTT AS ten_tinh,
+                a.MAQU AS ma_huyen,
+                c.TENQUAN AS ten_huyen,
+                a.MAPHUONGXA AS ma_xa,
+                d.TENPXA AS ten_xa 
+             FROM HSOFTTAMANH.btdbn a 
+             LEFT JOIN HSOFTTAMANH.btdtt b ON (b.MATT = a.MATT)
+             LEFT JOIN HSOFTTAMANH.btdquan c ON (c.MATT = a.MATT AND c.MAQU = a.MAQU)
+             LEFT JOIN HSOFTTAMANH.btdpxa d ON (d.MAQU = a.MAQU AND d.MAPHUONGXA = a.MAPHUONGXA)
+             WHERE MABN = :id`, 
+            { id: pid }
+        );
+
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/get-tinh', async (req, res) => {
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT MATT AS ma_tinh, TENTT AS ten_tinh FROM HSOFTTAMANH.BTDTT WHERE HIDE = 0 ORDER BY MATT`
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/get-huyen/:ma_tinh', async (req, res) => {
+    const { ma_tinh } = req.params;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT MAQU AS ma_huyen, MATT AS ma_tinh, TENQUAN AS ten_huyen FROM HSOFTTAMANH.BTDQUAN WHERE HIDE = 0 AND MATT = :ma_tinh ORDER BY MAQU`,
+            { ma_tinh }
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/get-xa/:ma_huyen', async (req, res) => {
+    const { ma_huyen } = req.params;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT MAPHUONGXA AS ma_xa, MAQU AS ma_huyen, TENPXA AS ten_xa FROM HSOFTTAMANH.BTDPXA WHERE HIDE = 0 AND MAQU = :ma_huyen ORDER BY MAPHUONGXA`,
+            { ma_huyen }
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.post('/update-btdbn', async (req, res) => {
+    const { pid, ma_tinh, ma_huyen, ma_xa, sonha } = req.body;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+
+        // Lấy thông tin địa chỉ cũ
+        const oldAddressResult = await connection.execute(
+            `SELECT MATT, MAQU, MAPHUONGXA FROM HSOFTTAMANH.BTDBN WHERE MABN = :pid`,
+            { pid }
+        );
+        const oldAddress = oldAddressResult.rows[0];
+
+        await connection.execute(
+            `UPDATE HSOFTTAMANH.BTDBN SET MATT = :ma_tinh, MAQU = :ma_huyen, MAPHUONGXA = :ma_xa, SONHA = :sonha WHERE MABN = :pid`,
+            { pid, ma_tinh, ma_huyen, ma_xa, sonha },
+            { autoCommit: true }
+        );
+
+        // Ghi log
+        const slog_module = 'DM_DIACHI';
+        const slog_event = 'Sửa địa chỉ';
+        const slog_log_old = `${oldAddress[0]}-${oldAddress[1]}-${oldAddress[2]}`;
+        const slog_log_new = `${ma_tinh}-${ma_huyen}-${ma_xa}`;
+        const slog_note = `Sửa địa chỉ cũ: ${slog_log_old} -> ${slog_log_new}`;
+        const slog_userid = req.session.username;
+        const slog_computer = req.hostname;
+        const slog_hostip = req.session.ip;
+
+        await writeLog(slog_userid, slog_computer, slog_hostip, slog_module, slog_event, slog_log_old, slog_log_new, slog_note);
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+
+//Lưu log
+const os = require('os');  // Module os cho phép lấy thông tin hệ thống
+
+async function writeLog(slog_userid, slog_computer, slog_hostip, slog_module, slog_event, slog_log_old, slog_log_new, slog_note) {
+    let connection;
+    try {
+        connection = await getOracleConnection();
+
+        // Truy vấn SLOG_MANV từ bảng HSOFTTAMANH.DLOGIN dựa trên SLOG_USERID
+        const manvResult = await connection.execute(
+            `SELECT ID FROM HSOFTTAMANH.DLOGIN WHERE USERID = :userid`,
+            { userid: slog_userid }
+        );
+
+        const slog_manv = manvResult.rows.length > 0 ? manvResult.rows[0][0] : null;
+
+        if (!slog_manv) {
+            throw new Error('User ID not found in DLOGIN');
+        }
+
+        // Lấy ID lớn nhất hiện tại và tăng thêm 1 để tạo SLOG_ID mới
+        const result = await connection.execute(`SELECT NVL(MAX(SLOG_ID), 0) + 1 AS NEXT_ID FROM HSOFTTAMANH.SYSTEM_LOG`);
+        const nextSlogId = result.rows[0][0];
+
+        // Lấy tên máy tính
+        const slog_computer = os.hostname();
+
+        await connection.execute(
+            `INSERT INTO HSOFTTAMANH.SYSTEM_LOG (
+                SLOG_ID, SLOG_MANV, SLOG_USERID, SLOG_TIME, SLOG_COMPUTER, SLOG_HOSTIP, 
+                SLOG_MODULE, SLOG_EVENT, SLOG_LOG_OLD, SLOG_LOG_NEW, SLOG_NOTE
+            ) VALUES (
+                :slog_id, :slog_manv, :slog_userid, SYSDATE, :slog_computer, :slog_hostip, 
+                :slog_module, :slog_event, :slog_log_old, :slog_log_new, :slog_note
+            )`,
+            {
+                slog_id: nextSlogId,
+                slog_manv: slog_manv,
+                slog_userid: slog_userid,
+                slog_computer: slog_computer,
+                slog_hostip: slog_hostip,
+                slog_module: slog_module,
+                slog_event: slog_event,
+                slog_log_old: slog_log_old,
+                slog_log_new: slog_log_new,
+                slog_note: slog_note
+            },
+            { autoCommit: true }
+        );
+    } catch (err) {
+        console.error('Failed to write log:', err);
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+}
+
+// Sửa bệnh phẩm
+app.get('/menu-item-3', (req, res) => {
+    if (!req.session.loggedin) {
+        return res.redirect('/login'); // Chuyển hướng đến trang đăng nhập nếu chưa đăng nhập
+    }
+    
+    res.render('menu-item-3', {
+        fullname: req.session.fullname, 
+        ip: req.session.ip
+    });
+});
+
+app.post('/search-chidinh', async (req, res) => {
+    const { pid, month, year } = req.body;
+
+    // Pad the month with leading zero if needed (e.g., "2" becomes "02")
+    const paddedMonth = month.padStart(2, '0');
+
+    // Use the last two digits of the year (e.g., "2024" becomes "24")
+    const shortYear = year.slice(-2);
+
+    // Construct the schema name dynamically based on the selected month and year
+    const schemaName = `hsofttamanh${paddedMonth}${shortYear}`;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT 
+                TO_CHAR(a.ID) AS idchidinh,
+                b.ten AS tenchidinh, 
+                c.hoten AS tenbn,
+                a.MAVP AS mavp,
+                a.BENHPHAM AS benhpham,
+                a.MADOITUONG AS doituong,
+                a.PAID AS tt_thuphi,
+                a.DONE AS tt_thuchien,
+                a.IDDIENBIEN AS id_dienbien,
+                TO_CHAR(a.NGAY, 'DD/MM/YYYY HH24:MI:SS') AS ngaychidinh,
+                TO_CHAR(a.NGAYNHANMAU, 'DD/MM/YYYY HH24:MI:SS') AS ngaynhanmau,
+                TO_CHAR(a.NGAYDOCKQ, 'DD/MM/YYYY HH24:MI:SS') AS ngaydockq,
+                a.MABS AS mabs,
+                a.MAKP AS makp,
+                a.MAPHIEU AS maphieu,
+                a.MAQL AS maquanly 
+             FROM ${schemaName}.v_chidinh a,
+            hsofttamanh.v_giavp b, hsofttamanh.btdbn c  
+             WHERE 
+                a.mabn = :pid 
+                AND a.mavp = b.id 
+                AND a.mabn = c.mabn
+                AND EXTRACT(MONTH FROM a.NGAY) = :month
+                AND EXTRACT(YEAR FROM a.NGAY) = :year
+             ORDER BY b.ten, a.NGAY`,
+            { pid, month, year }
+        );
+
+        //console.log(`SELECT * FROM ${schemaName}.v_chidinh`); // Thêm console.log để kiểm tra
+
+        const patientName = result.rows.length > 0 ? result.rows[0][2] : '';
+
+        res.json({ success: true, data: result.rows, patientName });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.get('/get-benhpam', async (req, res) => {
+    let connection;
+    try {
+        connection = await getOracleConnection();
+        const result = await connection.execute(
+            `SELECT ID, TEN FROM HSOFTTAMANH.DMBENHPHAM ORDER BY TEN`
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.post('/update-chidinh-benhpam', async (req, res) => {
+    const { chidinhId, benhpamId, month, year } = req.body;
+
+    // Pad the month with leading zero if needed (e.g., "2" becomes "02")
+    const paddedMonth = month.padStart(2, '0');
+
+    // Use the last two digits of the year (e.g., "2024" becomes "24")
+    const shortYear = year.slice(-2);
+
+    // Construct the schema name dynamically based on the selected month and year
+    const schemaName = `hsofttamanh${paddedMonth}${shortYear}`;
+
+    let connection;
+    try {
+        connection = await getOracleConnection();
+
+        // Lấy mã bệnh phẩm cũ trước khi cập nhật
+        const oldBenhphamResult = await connection.execute(
+            `SELECT BENHPHAM FROM ${schemaName}.V_CHIDINH WHERE ID = :chidinhId`,
+            { chidinhId }
+        );
+        const oldBenhpham = oldBenhphamResult.rows.length > 0 ? oldBenhphamResult.rows[0][0] : null;
+
+        // Cập nhật mã bệnh phẩm mới
+        await connection.execute(
+            `UPDATE ${schemaName}.V_CHIDINH SET BENHPHAM = :benhpamId WHERE ID = :chidinhId`,
+            { benhpamId, chidinhId },
+            { autoCommit: true }
+        );
+
+        // Ghi log
+        const slog_module = 'DM_BP';
+        const slog_event = 'Sửa bệnh phẩm';
+        const slog_log_old = oldBenhpham || 'NULL';
+        const slog_log_new = benhpamId || 'NULL';
+        const slog_note = `Sửa bệnh phẩm ID ${chidinhId}: ${slog_log_old} -> ${slog_log_new}`;
+        const slog_userid = req.session.username;
+        const slog_computer = req.hostname;
+        const slog_hostip = req.session.ip;
+
+        await writeLog(slog_userid, slog_computer, slog_hostip, slog_module, slog_event, slog_log_old, slog_log_new, slog_note);
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Failed to update V_CHIDINH:', err);
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    }
+});
+
+app.listen(port, '0.0.0.0', () => {
+    console.log(`App is running at http://10.8.88.139:${port}`);
+});
+
+/*
+app.listen(port, () => {
+    console.log(`App is running at http://${host}:${port}`);
+});
+*/
+```
+5 Tạo file views/login.ejs
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-image: url('/images/AnhNenBV.jpg');
+            background-size: cover;
+            background-position: center;
+        }
+        .login-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            width: 100%;
+        }
+        .login-container h2 {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .login-container input {
+            width: calc(100% - 20px);
+            padding: 10px;
+            margin: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        .login-container button {
+            width: calc(100% - 20px);
+            padding: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        .login-container button:hover {
+            background-color: #0056b3;
+        }
+        .login-container .checkbox {
+            display: flex;
+            align-items: center;
+            margin: 10px;
+        }
+        .login-container .checkbox input {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    
+    <!-- Loading spinner -->
+    <div id="loading-spinner" style="display:none;">
+        <img src="/public/images/1. Loading.jpg" alt="Loading...">
+    </div>
+
+    <div class="login-container">
+        <h2>Đăng nhập</h2>
+        <form action="/login" method="post">
+            <input type="text" name="username" placeholder="Tên đăng nhập hoặc Email" required>
+            <input type="password" name="password" placeholder="Mật khẩu" required>
+            <button type="submit">Đăng nhập</button>
+            <% if (typeof error !== 'undefined') { %>
+                <p style="color: red;"><%= error %></p>
+            <% } %>
+        </form>
+    </div>
+</body>
+</html>
+```
+6 Tạo file views/index.ejs
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BV Tâm Anh</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <style>
+        .user-info {
+            cursor: pointer;
+            color: white;
+            padding: 14px 20px;
+            float: right;
+            transition: background-color 0.3s;
+        }
+        
+        .user-info:hover {
+            background-color: #003366; /* Màu sáng khi di chuột qua */
+        }
+
+        .navbar {
+            background-color: #004c97;
+            overflow: visible;
+        }
+
+        .navbar .menu {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: row;
+        }
+
+        .navbar .menu > li {
+            padding: 14px 20px;
+            position: relative;
+            z-index: 500;
+        }
+
+        .navbar .menu > li > a {
+            color: white;
+            text-decoration: none;
+            display: block;
+        }
+
+        .navbar .menu > li:hover {
+            background-color: #003366; /* Màu sáng khi di chuột qua */
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            left: 0;
+            top: 100%;
+            background-color: #003366;
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+            z-index: 1000;
+        }
+
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
+
+        .dropdown-content li {
+            white-space: nowrap;
+        }
+
+        .dropdown-content li a {
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            display: block;
+        }
+
+        .dropdown-content li a:hover {
+            background-color: #002244; /* Màu sáng khi di chuột qua */
+        }
+
+        #content {
+            margin-top: 5px;
+            padding: 20px;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    
+    <!-- Loading spinner -->
+    <div id="loading-spinner" style="display:none;">
+        <img src="/public/images/1. Loading.jpg" alt="Loading...">
+    </div>
+
+    <nav class="navbar">
+        <ul class="menu">
+            <li><a href="#">Quản trị</a></li>
+            <li><a href="#">Tiếp đón</a></li>
+            <li><a href="#">IVF</a></li>
+            <li><a href="#">QLDD</a></li>
+            <li><a href="#">Ngoại trú</a></li>
+            <li><a href="#">Nội trú</a></li>
+            <li><a href="#">QLCL - KHTH</a></li>
+            <li><a href="#">Kế toán</a></li>
+            <li class="dropdown"><a href="#">Công cụ hỗ trợ</a>
+                <ul class="dropdown-content">
+                    <li><a href="/menu-item-1" data-content="1">1. Mở - khóa kho xuất VTTH</a></li>
+                    <li><a href="/menu-item-2" data-content="2">2. Sửa địa chỉ Bệnh nhân</a></li>
+                    <li><a href="/menu-item-3" data-content="3">3. Sửa bệnh phẩm</a></li>
+                </ul>
+            </li>
+            
+        </ul>
+        <div class="user-info" onclick="logout()">
+            <span><%= fullname %> (IP: <%= ip %>)</span>
+        </div>
+        
+        <script>
+            function logout() {
+                window.location.href = '/logout';
+            }
+        </script>
+    
+    </nav>
+    <div id="content">
+        <!-- Nội dung sẽ hiển thị ở đây khi chọn từ menu -->
+    </div>
+    <script src="/js/scripts.js"></script>
+    <script>
+        function logout() {
+            window.location.href = '/logout';
+        }
+    </script>
+</body>
+</html>
+```
+7. Tạo file views/menu-item-1.ejs
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu Item 1</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            cursor: pointer;
+            background-color: #f2f2f2;
+        }
+        th:hover {
+            background-color: #f1f1f1;
+        }
+        .edit-btn {
+            padding: 5px 10px;
+            border: none;
+            cursor: pointer;
+            color: white;
+            width: 60px;
+            text-align: center;
+        }
+        .edit-btn.mo {
+            background-color: red;
+        }
+        .edit-btn.dong {
+            background-color: #4CAF50;
+        }
+        .edit-btn.mo:hover {
+            background-color: darkred;
+        }
+        .edit-btn.dong:hover {
+            background-color: #45a049;
+        }
+        .search-container {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .search-container input {
+            padding: 5px;
+            font-size: 14px;
+        }
+        .combobox-container {
+            display: flex;
+            align-items: center;
+        }
+        .combobox-container input {
+            padding: 5px;
+            font-size: 14px;
+            width: 100%;
+        }
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .status-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading spinner -->
+    <div id="loading-spinner" style="display:none;">
+        <img src="/public/images/1. Loading.jpg" alt="Loading...">
+    </div>
+    
+    <div class="search-container">
+        <h1>ĐÓNG / MỞ KHO XUẤT VTYT&emsp;&emsp;</h1>
+        <span>Tìm theo ID:</span>
+        <input type="text" id="search-id" placeholder="Nhập ID" onkeyup="filterTable()">
+        <span>Tìm theo tên:</span>
+        <input type="text" id="search-name" placeholder="Nhập tên" onkeyup="filterTable()">
+    </div>
+    <table id="data-table">
+        <thead>
+            <tr>
+                <th data-column="ID">ID</th>
+                <th data-column="MA">MÃ</th>
+                <th data-column="TEN">TÊN KHOA</th>
+                <th data-column="MAKP">MÃ KP</th>
+                <th>ĐÓNG/MỞ</th>
+                <th>XÓA TRẮNG</th>
+                <th>KHOA PHÒNG</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% data.forEach(row => { %>
+                <tr>
+                    <% row.forEach((cell, index) => { %>
+                        <td contenteditable="<%= index > 0 %>"><%= cell %></td>
+                    <% }); %>
+                    <td>
+                        <button class="edit-btn <%= !row[3] || row[3].trim() === '' || row[3].trim() === '056' ? 'dong' : 'mo' %>" onclick="toggleStatus(this)">
+                            <%= !row[3] || row[3].trim() === '' || row[3].trim() === '056' ? 'Open' : 'Close' %>
+                        </button>
+                    </td>
+                    <td>
+                        <input type="checkbox" onchange="toggleCheckbox(this, '<%= row[0] %>')" <%= !row[3] ? 'checked' : '' %>>
+                    </td>
+                    <td class="combobox-container">
+                        <input type="text" list="makp-options-<%= row[0] %>" placeholder="Nhập để tìm kiếm" onchange="updateMakp(this, '<%= row[0] %>')">
+                        <datalist id="makp-options-<%= row[0] %>">
+                            <% makpData.forEach(makpRow => { %>
+                                <option value="<%= makpRow[0] %> - <%= makpRow[1] %>"></option>
+                            <% }); %>
+                        </datalist>
+                    </td>
+                </tr>
+            <% }); %>
+        </tbody>
+    </table>
+    <script src="/js/scripts.js"></script>
+</body>
+</html>
+```
+8. Tạo file views/menu-item-2.ejs
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sửa địa chỉ</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/dist/tippy.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
+    <script src="https://unpkg.com/@popperjs/core@2"></script>
+    <script src="https://unpkg.com/tippy.js@6"></script>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            cursor: pointer;
+            background-color: #f2f2f2;
+        }
+        th:hover {
+            background-color: #f1f1f1;
+        }
+        .edit-btn {
+            padding: 5px 10px;
+            border: none;
+            cursor: pointer;
+            color: white;
+            width: 60px;
+            text-align: center;
+        }
+        .edit-btn.mo {
+            background-color: red;
+        }
+        .edit-btn.dong {
+            background-color: #4CAF50;
+        }
+        .edit-btn.mo:hover {
+            background-color: darkred;
+        }
+        .edit-btn.dong:hover {
+            background-color: #45a049;
+        }
+        .search-container {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .search-container input {
+            padding: 5px;
+            font-size: 14px;
+        }
+        .combobox-container {
+            display: flex;
+            align-items: center;
+            gap: 20px; /* Giãn khoảng cách giữa các combobox */
+            margin-top: 20px;
+        }
+        .combobox-container > div {
+            flex: 1; /* Giãn các phần tử trong combobox-container để đều nhau */
+        }
+        .combobox-container select, .combobox-container input {
+            padding: 5px;
+            font-size: 14px;
+            width: 100%;
+        }
+        .combobox-container button {
+            padding: 10px 20px; /* Tăng khoảng cách padding cho button */
+            font-size: 14px;
+            cursor: pointer;
+            color: white;
+            background-color: #4CAF50;
+            border: none;
+            border-radius: 5px;
+            height: 42px; /* Chiều cao tương tự với các input và select */
+        }
+        .combobox-container button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .error {
+            border: 1px solid red;
+        }
+        /* Dialog styles */
+        .dialog-overlay {
+            display: none; /* Ẩn mặc định */
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .dialog {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: center;
+            width: 300px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .dialog button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        .dialog button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading spinner -->
+    <div id="loading-spinner" style="display:none;">
+        <img src="/public/images/1. Loading.jpg" alt="Loading...">
+    </div>
+    
+    <div class="search-container">
+        <h1>THÔNG TIN BỆNH NHÂN&emsp;&emsp;</h1>
+        <span>Mã BN: </span>        
+        <input type="text" id="search-pid" placeholder="Nhập mã PID" onkeypress="handleKeyPress(event)">
+    </div>
+    <table id="result-table">
+        <thead>
+            <tr>
+                <th>Mã BN</th>
+                <th>Họ Tên</th>
+                <th>Năm Sinh</th>
+                <th>Số Nhà</th>
+                <th>Mã Tỉnh</th>
+                <th>Tên Tỉnh</th>
+                <th>Mã Huyện</th>
+                <th>Tên Huyện</th>
+                <th>Mã Xã</th>
+                <th>Tên Xã</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Kết quả tìm kiếm sẽ hiển thị tại đây -->
+        </tbody>
+    </table>
+
+    <div class="combobox-container">
+        <div>
+            <label for="province-select">Tỉnh:</label>
+            <input type="text" id="province-select" list="tinh-options" onchange="loadDistrictOptions()" disabled>
+        </div>
+        <div>
+            <label for="district-select">Huyện:</label>
+            <input type="text" id="district-select" list="huyen-options" onchange="loadCommuneOptions()" disabled>
+        </div>
+        <div>
+            <label for="commune-select">Xã:</label>
+            <input type="text" id="commune-select" list="xa-options" disabled>
+        </div>
+        <div>
+            <label for="house-number">Số Nhà:</label>
+            <input type="text" id="house-number" disabled>
+        </div>
+        <button onclick="updatePatientAddress()" id="update-btn" disabled>Cập Nhật</button>
+    </div>
+
+    <div id="dialog-overlay" class="dialog-overlay">
+        <div class="dialog">
+            <p id="dialog-message"></p>
+            <button onclick="closeDialog()">OK</button>
+        </div>
+    </div> <!-- Thêm thẻ div cho hộp thoại -->
+
+    <script src="/js/scripts.js"></script>
+</body>
+</html>
+```
+9. Tao file views/menu-item-3.ejs
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu Item 3</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <style>
+         .table-container {
+            width: 100%;
+            overflow-x: auto; /* Thêm thanh cuộn ngang */
+            overflow-y: hidden; /* Đảm bảo chỉ có thanh cuộn ngang */
+        }
+
+        .table-wrapper {
+            max-height: 520px; /* Giới hạn chiều cao để chỉ hiển thị khoảng 10 dòng */
+            overflow-y: auto; /* Thêm thanh cuộn dọc */
+        }
+
+        table {
+            width: 2300px; /* Đặt độ rộng đủ lớn để kích hoạt thanh cuộn ngang */
+            border-collapse: collapse;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            vertical-align: middle; /* Căn giữa theo chiều dọc */
+        }
+
+        th {
+            cursor: pointer;
+            background-color: #f1f1f1;
+            position: sticky; /* Cố định tiêu đề bảng */
+            top: 0; /* Cố định ở đầu bảng */
+            z-index: 1; /* Đảm bảo tiêu đề nằm trên cùng */
+        }
+
+        .button-edit {
+            padding: 5px;
+            width: 60px;
+            text-align: center;
+        }
+
+        .search-container {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .search-container input, .search-container select {
+            font-size: 14px;
+            height: 28px; /* Đặt chiều cao để giống với combobox trong hình */
+            line-height: 18px; /* Đảm bảo văn bản được căn giữa theo chiều dọc */
+            border: 1px solid #ccc;
+            border-radius: 4px; /* Bo góc để trông giống với các combobox trong hình */
+        }
+
+        th.id-column { width: 100px; } /* Width for ID column */
+        th.name-column { width: 520px; } /* Width for Tên chỉ định column */
+        th.code-column { width: 100px; } /* Width for Mã VP column */
+        th.specimen-column { width: 130px; } /* Width for Bệnh phẩm column */
+        th.object-column { width: 130px; } /* Width for Mã đối tượng column */
+        th.paid-column { width: 80px; } /* Width for PAID column */
+        th.done-column { width: 80px; } /* Width for DONE column */
+        th.event-id-column { width: 130px; } /* Width for ID diễn biến column */
+        th.date-column { width: 180px; } /* Width for date columns */
+        th.doctor-column { width: 100px; } /* Width for MABS column */
+        th.department-column { width: 100px; } /* Width for MAKP column */
+        th.ticket-column { width: 120px; } /* Width for Mã phiếu column */
+        th.management-code-column { width: 120px; } /* Width for MAQL column */
+    </style>
+</head>
+<body>
+
+    <div class="search-container">
+        <h1>THÔNG TIN CHỈ ĐỊNH&emsp;&emsp;</h1>
+        <span>Tháng:&ensp;</span>
+        <select id="month-select">
+            <% for (let i = 1; i <= 12; i++) { %>
+                <option value="<%= i %>" <%= i === new Date().getMonth() + 1 ? 'selected' : '' %>><%= i %></option>
+            <% } %>
+        </select>
+        <span>&emsp;Năm:&ensp;</span>
+        <select id="year-select">
+            <% for (let i = new Date().getFullYear(); i >= new Date().getFullYear() - 15; i--) { %>
+                <option value="<%= i %>" <%= i === new Date().getFullYear() ? 'selected' : '' %>><%= i %></option>
+            <% } %>
+        </select>
+        <span>&emsp;Mã PID:&ensp;</span>
+        <input type="text" id="search-pid" placeholder="Nhập mã PID" onkeypress="BenhPhamKeyPress(event)">
+        &emsp;&emsp;
+        <span id="patient-name">Họ và tên:</span>
+    </div>
+
+    <div class="table-container">
+        <div class="table-wrapper">
+            <table id="data-table">
+                <thead>
+                    <tr>
+                        <th class="id-column" data-column="ID">ID</th>
+                        <th class="name-column" data-column="Tên chỉ định">Tên chỉ định</th>
+                        <th class="code-column" data-column="Mã VP">Mã VP</th>
+                        <th class="specimen-column" data-column="Bệnh phẩm">Bệnh phẩm</th>
+                        <th class="object-column" data-column="Mã đối tượng">Mã đối tượng</th>
+                        <th class="paid-column" data-column="PAID">PAID</th>
+                        <th class="done-column" data-column="DONE">DONE</th>
+                        <th class="event-id-column" data-column="ID diễn biến">ID diễn biến</th>
+                        <th class="date-column" data-column="Ngày chỉ định">Ngày chỉ định</th>
+                        <th class="date-column" data-column="Ngày nhận mẫu">Ngày nhận mẫu</th>
+                        <th class="date-column" data-column="Ngày đọc kết quả">Ngày đọc kết quả</th>
+                        <th class="doctor-column" data-column="MABS">MABS</th>
+                        <th class="department-column" data-column="MAKP">MAKP</th>
+                        <th class="ticket-column" data-column="Mã phiếu">Mã phiếu</th>
+                        <th class="management-code-column" data-column="MAQL">MAQL</th>
+
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Kết quả tìm kiếm sẽ hiển thị tại đây -->
+                </tbody>
+            </table>
+        </div>
+    </div>    
+
+    <!-- Modal chọn bệnh phẩm -->
+<div id="benhpham-modal" style="display: none;">
+    <div>
+        <h2>Chọn Bệnh Phẩm</h2>
+        <select id="benhpham-select" style="height: 26px;"></select>
+        <button class="button-edit" onclick="saveBenhPham()">Lưu</button>
+        <button class="button-edit" onclick="closeModal()">Đóng</button>
+    </div>
+</div>
+
+    <script src="/js/scripts.js"></script>
+</body>
+</html>
+```
+10. Tạo file public/css/styles.css
+```
+body {
+    font-family: Arial, sans-serif;
+}
+
+.navbar {
+    background-color: #004c97;
+    overflow: visible; /* Đảm bảo menu cha không che mất phần con */
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.navbar .menu {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: row; /* Giữ menu cha nằm ngang */
+}
+
+.navbar .menu > li {
+    padding: 14px 20px;
+    position: relative;
+    z-index: 500; /* Đảm bảo menu chính không che mất menu con */
+}
+
+.navbar .menu > li > a {
+    color: white;
+    text-decoration: none;
+    display: block;
+}
+
+.navbar .menu > li:hover {
+    background-color: #003366;
+}
+
+.dropdown-content {
+    display: none;
+    position: absolute;
+    background-color: #003366;
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+.dropdown:hover .dropdown-content {
+    display: block;
+}
+
+.dropdown-content li {
+    white-space: nowrap;
+}
+
+.dropdown-content li a {
+    color: white;
+    padding: 10px 20px;
+    text-decoration: none;
+    display: block;
+}
+
+.dropdown-content li a:hover {
+    background-color: #002244;
+}
+
+.user-info {
+    color: white;
+    padding: 14px 20px;
+    white-space: nowrap;
+}
+
+/* Spinner styles */
+#loading-spinner {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000;
+}
+
+#loading-spinner img {
+    width: 50px;
+    height: 50px;
+}
+```
+10. Tạo file public/js/scripts.js
+```
+//Menu 1: Đóng mở VTYT
+document.addEventListener('DOMContentLoaded', () => {
+    attachLinkEventListeners();
+    attachTableSortListeners();
+    attachSearchListeners();
+});
+
+let searchIdValue = '';
+let searchNameValue = '';
+
+// Debounce function to limit the rate at which a function can fire
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+// Function to handle fetching content
+function fetchContent(url) {
+    showLoadingSpinner();
+    fetch(url)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(html => {
+            document.getElementById('content').innerHTML = html;
+            // Re-attach event listeners
+            attachLinkEventListeners();
+            attachTableSortListeners();
+            attachSearchListeners();
+            applySearchValues(); // Apply search values after content reloads
+            hideLoadingSpinner();
+        })
+        .catch(error => {
+            console.error('There has been a problem with your fetch operation:', error);
+            hideLoadingSpinner();
+        });
+}
+
+// Show loading spinner
+function showLoadingSpinner() {
+    document.getElementById('loading-spinner').style.display = 'block';
+}
+
+// Hide loading spinner
+function hideLoadingSpinner() {
+    document.getElementById('loading-spinner').style.display = 'none';
+}
+
+// Function to handle link clicks with debounce
+const debouncedClickEvent = debounce((url) => fetchContent(url), 300);
+
+// Function to attach event listeners to menu links
+function attachLinkEventListeners() {
+    document.querySelectorAll('a[data-content]').forEach(link => {
+        link.addEventListener('click', event => {
+            event.preventDefault();
+            const url = link.getAttribute('href');
+            debouncedClickEvent(url);
+
+            // Close dropdown menu after clicking on a menu item
+            const dropdownContent = link.closest('.dropdown-content');
+            if (dropdownContent) {
+                dropdownContent.style.display = 'none';
+            }
+        });
+    });
+
+    // Attach event listeners to the dropdown menu
+    const dropdown = document.querySelector('.dropdown');
+    if (dropdown) {
+        dropdown.addEventListener('mouseenter', () => {
+            setTimeout(() => {
+                dropdown.querySelector('.dropdown-content').style.display = 'block';
+            }, 200); // Delay opening the menu for a smoother experience
+        });
+
+        dropdown.addEventListener('mouseleave', () => {
+            setTimeout(() => {
+                dropdown.querySelector('.dropdown-content').style.display = 'none';
+            }, 200); // Delay closing the menu for a smoother experience
+        });
+
+        dropdown.querySelector('a').addEventListener('click', (event) => {
+            const dropdownContent = dropdown.querySelector('.dropdown-content');
+            if (dropdownContent.style.display === 'block') {
+                dropdownContent.style.display = 'none';
+            } else {
+                dropdownContent.style.display = 'block';
+            }
+        });
+    }
+}
+
+// Call attachLinkEventListeners on DOM content loaded
+document.addEventListener('DOMContentLoaded', attachLinkEventListeners);
+
+function attachTableSortListeners() {
+    document.querySelectorAll('th[data-column]').forEach(header => {
+        header.addEventListener('click', () => {
+            const column = header.getAttribute('data-column');
+            const order = header.dataset.order = -(header.dataset.order || -1);
+            const table = header.closest('table');
+            const tbody = table.querySelector('tbody');
+            Array.from(tbody.querySelectorAll('tr'))
+                .sort((rowA, rowB) => {
+                    const cellA = rowA.querySelector(`td:nth-child(${header.cellIndex + 1})`).innerText;
+                    const cellB = rowB.querySelector(`td:nth-child(${header.cellIndex + 1})`).innerText;
+                    return (cellA > cellB ? 1 : -1) * order;
+                })
+                .forEach(row => tbody.appendChild(row));
+        });
+    });
+}
+
+function attachSearchListeners() {
+    document.querySelectorAll('.search-container input').forEach(input => {
+        input.addEventListener('keyup', () => {
+            searchIdValue = document.getElementById('search-id').value;
+            searchNameValue = document.getElementById('search-name').value;
+            filterTable();
+        });
+    });
+}
+
+function filterTable() {
+    const searchId = searchIdValue.toLowerCase();
+    const searchName = searchNameValue.toLowerCase();
+    const table = document.getElementById('data-table');
+    const rows = table.getElementsByTagName('tr');
+
+    for (let i = 1; i < rows.length; i++) {
+        const cells = rows[i].getElementsByTagName('td');
+        const idCell = cells[0] ? cells[0].textContent.toLowerCase() : "";
+        const nameCell = cells[2] ? cells[2].textContent.toLowerCase() : "";
+
+        if (idCell.indexOf(searchId) > -1 && nameCell.indexOf(searchName) > -1) {
+            rows[i].style.display = "";
+        } else {
+            rows[i].style.display = "none";
+        }
+    }
+}
+
+function applySearchValues() {
+    document.getElementById('search-id').value = searchIdValue;
+    document.getElementById('search-name').value = searchNameValue;
+    filterTable();
+}
+
+function toggleStatus(button) {
+    const row = button.closest('tr');
+    const id = row.querySelector('td:nth-child(1)').innerText;
+    const action = button.classList.contains('dong') ? 'dong' : 'mo';
+
+    fetch('/update-status', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ id, action })
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+        return response.json();
+    })
+    .then(result => {
+        if (result.success) {
+            fetchContent('/menu-item-1'); // Reload content
+        } else {
+            showDialog('Error updating status', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('There has been a problem with your fetch operation:', error);
+        showDialog('Error updating status', 'error');
+    });
+}
+
+function updateMakp(input, rowId) {
+    const selectedValue = input.value;
+    const makp = selectedValue.split(' - ')[0];
+
+    fetch('/update-status', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ id: rowId, action: 'update', makp })
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+        return response.json();
+    })
+    .then(result => {
+        if (result.success) {
+            fetchContent('/menu-item-1'); // Reload content
+        } else {
+            showDialog('Error updating status', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('There has been a problem with your fetch operation:', error);
+        showDialog('Error updating status', 'error');
+    });
+}
+
+function toggleCheckbox(checkbox, rowId) {
+    const action = checkbox.checked ? 'setNull' : 'setDefault';
+    fetch('/update-status', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ id: rowId, action })
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+        return response.json();
+    })
+    .then(result => {
+        if (result.success) {
+            fetchContent('/menu-item-1'); // Reload content
+        } else {
+            showDialog('Error updating status', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('There has been a problem with your fetch operation:', error);
+        showDialog('Error updating status', 'error');
+    });
+}
+
+//Menu 2: Sửa địa chỉ
+document.addEventListener('DOMContentLoaded', () => {
+    loadProvinceOptions();
+});
+
+function handleKeyPress(event) {
+    if (event.key === 'Enter') {
+        searchPID();
+    }
+}
+
+function searchPID() {
+    const pid = document.getElementById('search-pid').value;
+
+    fetch('/search-pid', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ pid })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            const tableBody = document.querySelector('#result-table tbody');
+            tableBody.innerHTML = '';
+
+            if (result.data.length > 0) {
+                const row = result.data[0]; // Lấy hàng đầu tiên
+                const newRow = document.createElement('tr');
+                row.forEach(cell => {
+                    const newCell = document.createElement('td');
+                    newCell.textContent = cell;
+                    newRow.appendChild(newCell);
+                });
+
+                tableBody.appendChild(newRow);
+
+                // Điền dữ liệu vào các combobox
+                fillComboboxes(row);
+
+                // Bật sáng các combobox và nút cập nhật
+                enableComboboxesAndButton(true);
+            } else {
+                showDialog('Không tìm thấy kết quả', 'error');
+                // Làm mờ các combobox và nút cập nhật
+                enableComboboxesAndButton(false);
+                clearComboboxes();
+            }
+        } else {
+            showDialog('Error searching PID', 'error');
+            // Làm mờ các combobox và nút cập nhật
+            enableComboboxesAndButton(false);
+            clearComboboxes();
+        }
+    })
+    .catch(error => {
+        console.error('There has been a problem with your fetch operation:', error);
+        showDialog('Error searching PID', 'error');
+        // Làm mờ các combobox và nút cập nhật
+        enableComboboxesAndButton(false);
+        clearComboboxes();
+    });
+}
+
+function fillComboboxes(data) {
+    document.getElementById('province-select').value = `${data[4]} - ${data[5]}`;
+    document.getElementById('district-select').value = `${data[6]} - ${data[7]}`;
+    document.getElementById('commune-select').value = `${data[8]} - ${data[9]}`;
+    document.getElementById('house-number').value = data[3];
+}
+
+function clearComboboxes() {
+    document.getElementById('province-select').value = '';
+    document.getElementById('district-select').value = '';
+    document.getElementById('commune-select').value = '';
+    document.getElementById('house-number').value = '';
+}
+
+function loadProvinceOptions() {
+    fetch('/get-tinh')
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                const dataList = document.createElement('datalist');
+                dataList.id = 'tinh-options';
+                result.data.forEach(row => {
+                    const option = document.createElement('option');
+                    option.value = row[0] + ' - ' + row[1];
+                    dataList.appendChild(option);
+                });
+                document.body.appendChild(dataList);
+            }
+        });
+}
+
+function loadDistrictOptions() {
+    const provinceValue = document.getElementById('province-select').value;
+    if (!provinceValue) {
+        showTooltip('#province-select', 'Vui lòng chọn tỉnh');
+        return;
+    }
+    const provinceCode = provinceValue.split(' - ')[0];
+
+    // Xóa dữ liệu cũ của combobox huyện và xã
+    document.getElementById('district-select').value = '';
+    document.getElementById('commune-select').value = '';
+    document.getElementById('house-number').value = ''; // Xóa trắng số nhà
+    const huyenDataList = document.getElementById('huyen-options');
+    const xaDataList = document.getElementById('xa-options');
+    if (huyenDataList) {
+        huyenDataList.innerHTML = '';
+    }
+    if (xaDataList) {
+        xaDataList.innerHTML = '';
+    }
+
+    fetch(`/get-huyen/${provinceCode}`)
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                const dataList = document.createElement('datalist');
+                dataList.id = 'huyen-options';
+                result.data.forEach(row => {
+                    const option = document.createElement('option');
+                    option.value = row[0] + ' - ' + row[2];
+                    dataList.appendChild(option);
+                });
+                const existingDataList = document.getElementById('huyen-options');
+                if (existingDataList) {
+                    document.body.removeChild(existingDataList);
+                }
+                document.body.appendChild(dataList);
+            }
+        });
+}
+
+function loadCommuneOptions() {
+    const districtValue = document.getElementById('district-select').value;
+    if (!districtValue) {
+        showTooltip('#district-select', 'Vui lòng chọn huyện');
+        return;
+    }
+    const districtCode = districtValue.split(' - ')[0];
+
+    // Xóa dữ liệu cũ của combobox xã
+    document.getElementById('commune-select').value = '';
+    const xaDataList = document.getElementById('xa-options');
+    if (xaDataList) {
+        xaDataList.innerHTML = '';
+    }
+
+    fetch(`/get-xa/${districtCode}`)
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                const dataList = document.createElement('datalist');
+                dataList.id = 'xa-options';
+                result.data.forEach(row => {
+                    const option = document.createElement('option');
+                    option.value = row[0] + ' - ' + row[2];
+                    dataList.appendChild(option);
+                });
+                const existingDataList = document.getElementById('xa-options');
+                if (existingDataList) {
+                    document.body.removeChild(existingDataList);
+                }
+                document.body.appendChild(dataList);
+            }
+        });
+}
+
+function updatePatientAddress() {
+    const pid = document.getElementById('search-pid').value;
+    const provinceValue = document.getElementById('province-select').value;
+    const districtValue = document.getElementById('district-select').value;
+    const communeValue = document.getElementById('commune-select').value;
+    const houseNumber = document.getElementById('house-number').value;
+
+    if (!provinceValue) {
+        showTooltip('#province-select', 'Vui lòng chọn tỉnh');
+        return;
+    }
+    if (!districtValue) {
+        showTooltip('#district-select', 'Vui lòng chọn huyện');
+        return;
+    }
+    if (!communeValue) {
+        showTooltip('#commune-select', 'Vui lòng chọn xã');
+        return;
+    }
+
+    const provinceCode = provinceValue.split(' - ')[0];
+    const districtCode = districtValue.split(' - ')[0];
+    const communeCode = communeValue.split(' - ')[0];
+
+    fetch('/update-btdbn', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ pid, ma_tinh: provinceCode, ma_huyen: districtCode, ma_xa: communeCode, sonha: houseNumber })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            searchPID(); // Reload the patient information after updating
+            showDialog('Cập nhật thành công', 'success');
+        } else {
+            showDialog('Error updating patient information', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('There has been a problem with your fetch operation:', error);
+        showDialog('Error updating patient information', 'error');
+    });
+}
+
+function showTooltip(selector, message) {
+    const element = document.querySelector(selector);
+    element.classList.add('error');
+    tippy(element, {
+        content: message,
+        placement: 'right',
+        showOnCreate: true,
+        onHidden(instance) {
+            instance.destroy();
+            element.classList.remove('error');
+        }
+    });
+}
+
+function enableComboboxesAndButton(enable) {
+    document.getElementById('province-select').disabled = !enable;
+    document.getElementById('district-select').disabled = !enable;
+    document.getElementById('commune-select').disabled = !enable;
+    document.getElementById('house-number').disabled = !enable;
+    document.getElementById('update-btn').disabled = !enable;
+}
+
+function showDialog(message, type) {
+    const dialogOverlay = document.getElementById('dialog-overlay');
+    const dialogMessage = document.getElementById('dialog-message');
+    dialogMessage.innerText = message;
+    dialogOverlay.style.display = 'flex';
+}
+
+function closeDialog() {
+    const dialogOverlay = document.getElementById('dialog-overlay');
+    dialogOverlay.style.display = 'none';
+}
+
+//Sửa bệnh phẩm
+// Function to handle the key press event for PID search
+function BenhPhamKeyPress(event) {
+    if (event.key === 'Enter') {
+        searchBenhPham();
+
+        // Đóng form bệnh phẩm nếu đang mở
+        closeModal();
+    }
+}
+
+// Function to handle the key press event for PID search (already exists)
+function searchBenhPham() {
+    const pid = document.getElementById('search-pid').value;
+    const month = document.getElementById('month-select').value;
+    const year = document.getElementById('year-select').value;
+
+    fetch('/search-chidinh', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ pid, month, year })
+    })
+    .then(response => response.json())
+    .then(result => {
+        const tableBody = document.querySelector('#data-table tbody');
+        tableBody.innerHTML = '';
+
+        if (result.success && result.data.length > 0) {
+            document.getElementById('patient-name').textContent = `Họ và tên: ${result.patientName}`;
+            result.data.forEach(row => {
+                const newRow = document.createElement('tr');
+
+                row.forEach((cell, index) => {
+                    const newCell = document.createElement('td');
+
+                    // Add special styling for the "ID" column
+                    if (index === 0) { 
+                        newCell.className = 'id-column';
+                        newCell.style.color = '#0066cc';
+                        newCell.style.textDecoration = 'underline';
+                        newCell.style.cursor = 'pointer';
+                        newCell.addEventListener('click', () => openBenhPhamModal(cell));
+                    }
+                    if (index !== 2) { // Bỏ qua cột "Tên bệnh nhân"
+                        newCell.textContent = cell;
+                        newRow.appendChild(newCell);
+                    }
+                });
+
+                tableBody.appendChild(newRow);
+            });
+
+            // Re-attach sort listeners after new data is loaded
+            attachTableSortListenersForMenu3();
+            attachSearchListeners(); // Re-attach keyup listeners
+        } else {
+            document.getElementById('patient-name').textContent = "Không tìm thấy dữ liệu";
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('patient-name').textContent = "Không tìm thấy dữ liệu";
+    });
+}
+
+// Open the modal to select a new benhpham (disease sample)
+function openBenhPhamModal(chidinhId) {
+    fetch('/get-benhpam')
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            const benhphamSelect = document.getElementById('benhpham-select');
+            benhphamSelect.innerHTML = '';
+
+            result.data.forEach(row => {
+                const option = document.createElement('option');
+                option.value = row[0];
+                option.textContent = `${row[0]} - ${row[1]}`;
+                benhphamSelect.appendChild(option);
+            });
+
+            const modal = document.getElementById('benhpham-modal');
+            modal.style.display = 'block';
+
+            // Save the current chi dinh ID to update later
+            modal.setAttribute('data-chidinh-id', chidinhId);
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+// Close the modal
+function closeModal() {
+    const modal = document.getElementById('benhpham-modal');
+    modal.style.display = 'none';
+}
+
+// Save the selected benhpham ID to the current record
+function saveBenhPham() {
+    const modal = document.getElementById('benhpham-modal');
+    const chidinhId = modal.getAttribute('data-chidinh-id');
+    const benhpamId = document.getElementById('benhpham-select').value;
+    const month = document.getElementById('month-select').value;
+    const year = document.getElementById('year-select').value;
+
+    console.log(`Saving benhpamId: ${benhpamId} for chidinhId: ${chidinhId} in schema of ${month}/${year}`);
+
+    fetch('/update-chidinh-benhpam', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ chidinhId, benhpamId, month, year })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            console.log('Update successful, reloading data...');
+            closeModal();
+            searchBenhPham(); // Reload the data table after update
+        } else {
+            console.error('Update failed:', result.message);
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+// Attach table sort listeners (already exists)
+function attachTableSortListenersForMenu3() {
+    document.querySelectorAll('#data-table th[data-column]').forEach(header => {
+        header.addEventListener('dblclick', () => {
+            const column = header.getAttribute('data-column');
+            const order = header.dataset.order = -(header.dataset.order || -1);
+            const table = header.closest('table');
+            const tbody = table.querySelector('tbody');
+            Array.from(tbody.querySelectorAll('tr'))
+                .sort((rowA, rowB) => {
+                    const cellA = rowA.querySelector(`td:nth-child(${header.cellIndex + 1})`).innerText;
+                    const cellB = rowB.querySelector(`td:nth-child(${header.cellIndex + 1})`).innerText;
+                    return (cellA > cellB ? 1 : -1) * order;
+                })
+                .forEach(row => tbody.appendChild(row));
+        });
+    });
+}
+
+// Initialize event listeners when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    attachTableSortListenersForMenu3();
+});
+```
+11. File package.json
+```
+{
+  "name": "13.-testnew",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "nodemon app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "oracledb": "^6.6.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "bin": "app.js"
+}
+```
+12. Chạy chương trình
+npm start
